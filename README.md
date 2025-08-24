@@ -93,7 +93,7 @@ graph TD
 
     F --> G[Query Processing Server<br/> Subscribe to <br/>search-query-topic]
 
-    G --> H[Centralized Trie Structure]
+    G --> H[Call LogSearch Function<br/>Centralized Trie Structure]
     H --> I[Timeout Processing]
     I --> J{Complete Word?}
     
