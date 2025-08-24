@@ -20,24 +20,24 @@ When users search incrementally (e.g., "B" → "Bu" → "Bus" → "Business"), w
 The implementation uses a **Trie data structure** combined with a **delayed storage mechanism**:
 
 1. **Trie Structure**: Tracks all search prefixes in memory.
-2. **Timeout-based Storage**: Words are stored to the database only after a timeout period, this is assuming the user will finish the typing of a search within a time-window.
-3. **Dynamic Updates**: If a longer word comes in later time, it replaces shorter stored words.
-
+2. **Timeout-based Storage**: Words are stored to the database only after a timeout period, this is assuming the user will finish the typing of a search within a time-window. This approach will help reduce the number of database calls.
+3. **Dynamic Updates**: If a longer word comes in later time, it replaces shorter stored words into PostgreSQL.
 
 ## Files Structure
 
-- `main.go`: Demo application showing database persistence and trie visualization
-- `search_logger.go`: Main implementation - Core SearchLogger with timeout-based storage
-- `postgres_mock.go`: MockPostgresDB simulation with detailed SQL logging
-- `search_logger_test.go`: Unit test suite with testify assertions
+- `main.go`: Demo application showing the SearchLogger in action. Run it, you will see the logging and deduplication process.
+- `search_logger.go`: Main implementation - Core SearchLogger with timeout-based storage.
+- `postgres_mock.go`: MockPostgresDB simulation with detailed SQL logging.
+- `search_logger_test.go`: Unit test suite with testify assertions.
 
 ### Demo In Action
 Run this command to see the demo in action:
 ```
-timeout 20s go run . 2>&1
+timeout 20s go run . 2>&1   # Run main demo program
+go test -v                  # Run unit test
 ```
 
-Output:
+Output (shortened):
 ```
 === Search Logger Demo ===
 1. Creating initial logger and adding test data:
@@ -72,14 +72,23 @@ Output:
 ```
 
 ## Handle the 'multi-server environment'
+The problem statement mentioned the HTTP API handler (`<hostUrl>/api/experts?Query=b&Limit=28&Verified=true`) will call my LogSearch() in a goroutine. Considering that every character the user typed needs to be entered into a Trie, an in-memory data structure is ideal for such usecase to reduce number of database calls, trying to avoid a database call for every incoming queries. The existing implementation will work if it is a single-server environment.
 
-The problem stated that the API will call my LogSearch() in a goroutine. Considering that every character the user typed needs to be entered into a Trie, an in-memory data structure is ideal for such usecase to reduce number of database calls, trying to avoid a database call for every incoming queries.
+However, there is a big catch. The problem statement says `This will run on a multi-server environment`, so, if the it is possible that Query=`b`, Query=`bu`, and Query=`bus` hit 3 different backend servers if the load balancer has no "session stickiness" for the same client, in addition, multiple queries from different users on the different devices will need same deduplication layers as well. In this case, the above solution will not work because the Trie structure is not be updated with all the searched words. 
 
-However, there is a big catch. The problem statement says `This will run on a multi-server environment`, so, if the it is possible that Query=`b`, Query=`bu`, and Query=`bus` hit 3 different backend servers if the load balancer has no "session stickiness". In this case, the above solution will not work because the Trie structure is not be updated with all the searched words. 
+Thinking of the complexity of syncing a distributed cache is way too expensive and the order or the incoming words can't be guaranteed, we will choose the approach to employ a single-topic PubSub model per client (because it has to work for both logged-in and guest users) with the centralized caching and dedup processing design.
 
-Here is an updated structure to handle such situation as shown below. Such architecture also de-dupe the searches performed by multiple users. The PubSub can be done by any message broker (e.g., Kafka, RabbitMQ or Redis Pubsub).
+Here is an updated structure to handle such situation as shown below. Such architecture also de-dupe the searches performed by multiple users. The PubSub can be done by any message broker (e.g., Kafka, RabbitMQ, GCP Pubsub or Redis Pubsub), with `Redis pubsub` to be the preferred choice due to it's simplicity, the topic will be auto-created if it does not exist before publishing, and the subscriber of the pubsub can subscrbe to all topics with prefix `search-query-topic-*`:
 
-```mermaid
+```
+PSUBSCRIBE search-query-topic-*
+```
+
+Note that the `search-query-topic-client-id` is unique per user session, when the <client-id> is:
+- When user is logged in, clientID = `userId-sessionId`.
+- When user is a guest, clientID = `guest-<random-id>`, the front-end code will generate it.
+
+```mermaid 
 graph TD
     A[User Types:<br/> b, bu, bus] --> B[Load Balancer]
     
@@ -87,11 +96,11 @@ graph TD
     B --> D[Backend Server 2<br/>Get Query: 'bu']  
     B --> E[Backend Server 3<br/>Get Query: 'bus']
     
-    C -->|Publish| F[PubSub Topic:<br/>search-query-topic]
+    C -->|Publish| F[PubSub Topic:<br/>search-query-topic-topic-client-id]
     D -->|Publish| F
     E -->|Publish| F
 
-    F --> G[Query Processing Server<br/> Subscribe to <br/>search-query-topic]
+    F --> G[Query Processing Server<br/> Subscribe to <br/>search-query-topic-client-id]
 
     G --> H[Call LogSearch Function<br/>Centralized Trie Structure]
     H --> I[Timeout Processing]

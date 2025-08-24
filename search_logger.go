@@ -19,9 +19,9 @@ type TrieNode struct {
 
 // SearchLogger handles search deduplication and storage
 type SearchLogger struct {
-	prefixTree *TrieNode
-	db         *MockPostgresDB
-	mutex      sync.RWMutex
+	trieRoot *TrieNode
+	db       *MockPostgresDB
+	mutex    sync.RWMutex
 	// timeout is how long to wait before considering a word "complete"
 	timeout time.Duration
 	// stopChan to better control the flushing routine
@@ -44,10 +44,10 @@ func NewSearchLoggerWithDB(timeout time.Duration, db *MockPostgresDB) (*SearchLo
 	}
 
 	logger := &SearchLogger{
-		prefixTree: &TrieNode{children: make(map[rune]*TrieNode)},
-		db:         db,
-		timeout:    timeout,
-		stopChan:   make(chan struct{}),
+		trieRoot: &TrieNode{children: make(map[rune]*TrieNode)},
+		db:       db,
+		timeout:  timeout,
+		stopChan: make(chan struct{}),
 	}
 
 	// Load existing words from database and build the prefix tree
@@ -71,7 +71,7 @@ func (sl *SearchLogger) LogSearch(word string) error {
 	sl.mutex.Lock()
 	defer sl.mutex.Unlock()
 
-	node := sl.prefixTree
+	node := sl.trieRoot
 	now := time.Now()
 
 	// Traverse/build the trie
@@ -96,7 +96,7 @@ func (sl *SearchLogger) LogSearch(word string) error {
 // handleWordExtension checks if this word extends a previously stored shorter word
 func (sl *SearchLogger) handleWordExtension(word string, currentNode *TrieNode) error {
 	// Look for shorter prefixes that might be stored in DB
-	node := sl.prefixTree
+	node := sl.trieRoot
 	for i, char := range []rune(word) {
 		if node.children[char] == nil {
 			break
@@ -156,6 +156,19 @@ func (sl *SearchLogger) flushCompletedWordToDBRoutine() {
 }
 
 // processTimedOutWords finds words that haven't been updated recently and stores them
+//
+// Why we need isPrefixOfAnyWord check:
+// Consider user types: "B" → "Bu" → "Bus" → "Business", then stops typing.
+// After timeout, ALL words become "timed out":
+//
+//	timedOutWords = {"B": node, "Bu": node, "Bus": node, "Business": node}
+//
+// isPrefixOfAnyWord simply checks if node has children, we only want the most complete form "Business":
+//
+//	"B" → true (has children: 'u')
+//	"Bu" → true (has children: 's')
+//	"Bus" → true (has children: 'i')
+//	"Business" → false (no children)
 func (sl *SearchLogger) processTimedOutWords() {
 	sl.mutex.Lock()
 	defer sl.mutex.Unlock()
@@ -164,7 +177,7 @@ func (sl *SearchLogger) processTimedOutWords() {
 
 	// Find all timed-out words
 	timedOutWords := make(map[string]*TrieNode)
-	sl.findAllTimedOutWords(sl.prefixTree, "", cutoffTime, timedOutWords)
+	sl.findAllTimedOutWords(sl.trieRoot, "", cutoffTime, timedOutWords)
 
 	if len(timedOutWords) == 0 {
 		return
@@ -209,8 +222,9 @@ func (sl *SearchLogger) findAllTimedOutWords(node *TrieNode, currentWord string,
 }
 
 // isPrefixOfAnyWord checks if a word is a prefix of any other word in the trie
+// Simply check if the node has any children - much simpler than checking timestamps!
 func (sl *SearchLogger) isPrefixOfAnyWord(word string) bool {
-	node := sl.prefixTree
+	node := sl.trieRoot
 
 	// Navigate to the word's node
 	for _, char := range word {
@@ -220,21 +234,8 @@ func (sl *SearchLogger) isPrefixOfAnyWord(word string) bool {
 		node = node.children[char]
 	}
 
-	// Check if this node has any children with lastSeen set
-	return sl.hasAnySearchedDescendants(node)
-}
-
-// hasAnySearchedDescendants checks if any descendant nodes have been searched
-func (sl *SearchLogger) hasAnySearchedDescendants(node *TrieNode) bool {
-	for _, child := range node.children {
-		if !child.lastSeen.IsZero() {
-			return true
-		}
-		if sl.hasAnySearchedDescendants(child) {
-			return true
-		}
-	}
-	return false
+	// If this node has any children, it's a prefix of longer words
+	return len(node.children) > 0
 }
 
 // GetStoredSearches returns all stored searches
@@ -266,7 +267,7 @@ func (sl *SearchLogger) loadExistingWords() error {
 
 // buildTrieFromWord builds trie path for a stored word
 func (sl *SearchLogger) buildTrieFromWord(word string) error {
-	node := sl.prefixTree
+	node := sl.trieRoot
 
 	for _, char := range word {
 		if node.children[char] == nil {
