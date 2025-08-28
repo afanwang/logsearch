@@ -19,7 +19,7 @@ func main() {
 	// Create user identifier generator for demo
 	idGen := NewUserIdentifierGenerator()
 
-	fmt.Println("\n=== Scenario 1: Logged-in User Progressive Typing in order ===")
+	fmt.Println("\n=== Scenario 1: Logged-in user progressive typing in order ===")
 	user1Identifier := idGen.GenerateUserID()
 	fmt.Printf("Logged-in User 1 (%s) progressively typing 'Business':\n", user1Identifier)
 	for i := 1; i <= len("Business"); i++ {
@@ -33,11 +33,11 @@ func main() {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	fmt.Println("\n=== Scenario 2: Anonymous User Progressive Typing in order ===")
+	fmt.Println("\n=== Scenario 2: Anonymous user progressive typing in order ===")
 	anon1Identifier := idGen.GenerateAnonID()
-	fmt.Printf("Anonymous User 1 (%s) progressively typing 'business':\n", anon1Identifier)
-	for i := 1; i <= len("business"); i++ {
-		partial := "business"[:i]
+	fmt.Printf("Anonymous User 1 (%s) progressively typing 'Business':\n", anon1Identifier)
+	for i := 1; i <= len("Business"); i++ {
+		partial := "Business"[:i]
 		fmt.Printf("  Typing: '%s'", partial)
 		if err := logger.LogSearchV2(anon1Identifier, partial); err != nil {
 			fmt.Printf(" - Error: %v\n", err)
@@ -49,9 +49,9 @@ func main() {
 
 	fmt.Println("\n=== Scenario 3: A Third Users Same Words in order ===")
 	user2Identifier := idGen.GenerateUserID()
-	fmt.Printf("Logged-in User 2 (%s) progressively typing 'business':\n", user2Identifier)
+	fmt.Printf("Logged-in User 2 (%s) progressively typing 'Business':\n", user2Identifier)
 	for i := 1; i <= len("business"); i++ {
-		partial := "business"[:i]
+		partial := "Business"[:i]
 		fmt.Printf("  Typing: '%s'", partial)
 		if err := logger.LogSearchV2(user2Identifier, partial); err != nil {
 			fmt.Printf(" - Error: %v\n", err)
@@ -63,11 +63,11 @@ func main() {
 
 	// Note, the user will always type in-order query;
 	// But the query may arrive backend server out of order in a distributed system.
-	fmt.Println("\n=== Scenario 4: User 3 Out-of-Order query ===")
+	fmt.Println("\n=== Scenario 4: User 3 out-of-order query ===")
 	user3Identifier := idGen.GenerateUserID()
-	fmt.Printf("Logged-in User 3 (%s): out of order 'business':\n", user3Identifier)
+	fmt.Printf("Logged-in User 3 (%s): out of order 'Business':\n", user3Identifier)
 	for i := len("business"); i >= 1; i-- {
-		partial := "business"[:i]
+		partial := "Business"[:i]
 		fmt.Printf("  Typing: '%s'", partial)
 		if err := logger.LogSearchV2(user3Identifier, partial); err != nil {
 			fmt.Printf(" - Error: %v\n", err)
@@ -77,7 +77,7 @@ func main() {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	fmt.Println("\n=== Final Results: Per-User Deduplication ===")
+	fmt.Println("\n=== Final results: per-user deduplication ===")
 	displayFinalResults(logger, user1Identifier, anon1Identifier, user2Identifier, user3Identifier)
 }
 

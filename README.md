@@ -130,26 +130,86 @@ graph TD
 
 ### End of Version 1
 
+------------------------------
 ### Version 2
-1. Logged user vs un-logged-in user
-For logged-in user, the backend knows the userID because the request passed the authentication layer and the auth_token is available to use assuming the auth is token based; 
-For un-logged in users, we can generate an ephemeral cookie with name 'anon_id' on the first visit, and for the follow-up api calls we will use the same anon_id. This can be done in the authentication/gateway layer, if in the itsio environment, normally it is in `ext-auth-session` service, `k8s kind: AuthorizationPolicy`, before it hits any backend service.
+
+#### Logged user vs un-logged-in user
+- For logged-in user, the backend knows the userID because the request passed the authentication layer and the auth_token is available to use assuming the auth is token based; 
+
+- For un-logged in users, we can generate an ephemeral cookie with name 'anon_id' on the first visit, and for the follow-up api calls we will use the same anon_id. This can be done in the authentication/gateway layer, if in the itsio environment, normally it is in `ext-auth-session` service, `k8s kind: AuthorizationPolicy`, before it hits any backend service.
 
 This way, we can distinguish logged-in users and different un-logged-in users.
 
-2. I thought it was a cut off but now I know that sentence is not. To satisfy the requirement that "It should deduplicate per user so the searchLog function should factor in the user doing the search", in the database table we will have something like this:
+To satisfy the requirement that "It should deduplicate per user so the searchLog function should factor in the user doing the search", in the database table we will have something like this:
 
------ db table user_search -----
- user_dentifier, search_word
- user_id,           busine
- anon_id,          business
+#### Database Table: user_searches
+
+| user_identifier | search_word |
+|----------------|-------------|
+| user_id        | busine      |
+| anon_id        | business    |
 
 So we are doing dedup per user.
 
-3. Yes, now I have cleared up the hurdle to identify logged-in users and un-logged-in users, I am able to provide a solution "without holding everything in memory, deal with mutex locks, use a PubSub, or require the front-end to pass a session id". My original approach was trying to reduce the number of DB queries and avoid handling the distributed caching complexity. 
+In the second version, will provide a solution "without holding everything in memory, deal with mutex locks, use a PubSub, or require the front-end to pass a session id". My original approach was trying to reduce the number of DB queries and avoid handling the distributed caching complexity.
 
 Now, I will need to rely on a db query to the postgresQL for each api call to do the dedup per user. Some considerations:
- query 'b', 'bu', 'bus' ... will come in-order from the user's input, but they may end up with hitting call db query 'bus'-> 'bu'-> 'b', it can totally happen in a distributed system. But our dedupe logic should still handle it. In the case of a db call order 'bus'-> 'bu'-> 'b' or In the case of 'b'-> 'bu'->'bus', it will still keep 'bus'.
 
-I will code it up and get back to you. If you see any draw-back or want to suggest something more, please reply to me today. 
-Otherwise I will just go ahead with the implementation. And I should finish by later today, no later than tmr noon time worst case.
+User query 'b', 'bu', 'bus' ... will come in-order from the user's input, but they may end up with hitting call db query 'bus'-> 'bu'-> 'b', it can totally happen in a distributed system. But our dedupe logic should still handle it. In the case of a db call order 'bus'-> 'bu'-> 'b' or In the case of 'b'-> 'bu'->'bus', it will still keep 'bus'.
+
+This is the output of the program showing how the current dedup logic work per user:
+```
+=== Search Logger V2 Demo ===
+
+=== Scenario 1: Logged-in user progressive typing in order ===
+Logged-in User 1 (user_1) progressively typing 'Business':
+  Typing: 'B' (new)
+  Typing: 'Bu' (extending 'b' to 'bu')
+  Typing: 'Bus' (extending 'bu' to 'bus')
+  Typing: 'Busi' (extending 'bus' to 'busi')
+  Typing: 'Busin' (extending 'busi' to 'busin')
+  Typing: 'Busine' (extending 'busin' to 'busine')
+  Typing: 'Busines' (extending 'busine' to 'busines')
+  Typing: 'Business' (extending 'busines' to 'business')
+
+=== Scenario 2: Anonymous user progressive typing in order ===
+Anonymous User 1 (guest_2) progressively typing 'Business':
+  Typing: 'B' (new)
+  Typing: 'Bu' (extending 'b' to 'bu')
+  Typing: 'Bus' (extending 'bu' to 'bus')
+  Typing: 'Busi' (extending 'bus' to 'busi')
+  Typing: 'Busin' (extending 'busi' to 'busin')
+  Typing: 'Busine' (extending 'busin' to 'busine')
+  Typing: 'Busines' (extending 'busine' to 'busines')
+  Typing: 'Business' (extending 'busines' to 'business')
+
+=== Scenario 3: A Third Users Same Words in order ===
+Logged-in User 2 (user_3) progressively typing 'Business':
+  Typing: 'B' (new)
+  Typing: 'Bu' (extending 'b' to 'bu')
+  Typing: 'Bus' (extending 'bu' to 'bus')
+  Typing: 'Busi' (extending 'bus' to 'busi')
+  Typing: 'Busin' (extending 'busi' to 'busin')
+  Typing: 'Busine' (extending 'busin' to 'busine')
+  Typing: 'Busines' (extending 'busine' to 'busines')
+  Typing: 'Business' (extending 'busines' to 'business')
+
+=== Scenario 4: User 3 out-of-order query ===
+Logged-in User 3 (user_4): out of order 'Business':
+  Typing: 'Business' (new)
+  Typing: 'Busines' (ignoring prefix of 'business')
+  Typing: 'Busine' (ignoring prefix of 'business')
+  Typing: 'Busin' (ignoring prefix of 'business')
+  Typing: 'Busi' (ignoring prefix of 'business')
+  Typing: 'Bus' (ignoring prefix of 'business')
+  Typing: 'Bu' (ignoring prefix of 'business')
+  Typing: 'B' (ignoring prefix of 'business')
+
+=== Final results: per-user deduplication ===
+Final search results:
+  Logged-in User 1 (user_1): [business]
+  Anonymous User 1 (guest_2): [business]
+  Logged-in User 2 (user_3): [business]
+  Logged-in User 3 (user_4): [business]
+Total unique search terms stored: 4
+```
